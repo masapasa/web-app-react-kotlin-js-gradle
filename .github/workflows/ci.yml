@@ -1,0 +1,75 @@
+# This is a basic workflow to help you get started with Actions
+
+name: CI
+
+# Controls when the action will run.
+on:
+  # Triggers the workflow on push or pull request events but only for the main branch
+  # push:
+  #   branches: [ main ]
+  # pull_request:
+  #   branches: [ main ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  build:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      - name: Context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: |
+          echo "$GITHUB_CONTEXT"
+
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v2
+
+      - name: Setup Detekt
+        run: |
+          dest=$( mktemp -d )
+          curl --request GET \
+            --url https://github.com/detekt/detekt/releases/download/v1.15.0-RC2/detekt \
+            --silent \
+            --location \
+            --output $dest/detekt
+          chmod +x $dest/detekt
+          echo $dest >> $GITHUB_PATH
+
+      - name: Detekt
+        continue-on-error: true
+        run: |
+          detekt --input ${{ github.workspace }} --report sarif:${{ github.workspace }}/detekt.sarif.json
+
+      - name: Make artifact location URIs relative
+        continue-on-error: true
+        run: |
+          jq \
+            --arg github_workspace ${{ github.workspace }} \
+            '. | ( .runs[].results[].locations[].physicalLocation.artifactLocation.uri |= if test($github_workspace) then .[($github_workspace | length | . + 1):] else . end )' \
+            ${{ github.workspace }}/detekt.sarif.json > ${{ github.workspace }}/detekt.relativeURIs.sarif.json
+
+      - name: List results
+        run: |
+          cat ${{ github.workspace }}/detekt.relativeURIs.sarif.json | jq '.runs[0].results[]'
+
+      - name: List locations
+        continue-on-error: true
+        run: |
+          cat ${{ github.workspace }}/detekt.relativeURIs.sarif.json \
+            | jq '.runs[0].results[].locations[].physicalLocation.artifactLocation.uri' -r \
+            | uniq \
+            | xargs ls -ltr
+
+      # Uploads results.sarif to GitHub repository using the upload-sarif action
+      - uses: swinton/codeql-action/upload-sarif@main
+        with:
+          # Path to SARIF file relative to the root of the repository
+          sarif_file: ${{ github.workspace }}/detekt.relativeURIs.sarif.json
+          checkout_path: ${{ github.workspace }}
